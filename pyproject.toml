@@ -75,6 +75,7 @@ histogram_viewer = "glue_qt.viewers.histogram:setup"
 profile_viewer = "glue_qt.viewers.profile:setup"
 table_viewer = "glue_qt.viewers.table:setup"
 directory_importer = "glue_qt.io.directory_importer:setup"
+claude_code_bridge = "glue_qt.plugins.bridge_plugin:setup"
 
 [build-system]
 requires = [
