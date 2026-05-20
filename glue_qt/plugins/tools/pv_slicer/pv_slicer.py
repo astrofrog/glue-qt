@@ -1,14 +1,29 @@
 import numpy as np
 
-from glue.viewers.matplotlib.toolbar_mode import PathMode
-from glue_qt.viewers.image import StandaloneImageViewer
+from matplotlib.lines import Line2D
+
+from glue.core import Data
 from glue.config import viewer_tool
-from glue.utils import defer_draw
-from glue.core.coordinate_helpers import axis_label
+from glue.viewers.matplotlib.toolbar_mode import PathMode, ToolbarModeBase
+from glue.plugins.tools.pv_slicer.path_sliced_data import PathSlicedData
+from glue.plugins.tools.pv_slicer.path_sliced_data_links import (
+    link_path_sliced_to_parent, link_path_sliced_pair_paths)
+
+from glue_qt.viewers.image import ImageViewer
+
+
+__all__ = ['PathSlicerMode', 'PathSlicerCrosshairMode']
 
 
 @viewer_tool
-class PVSlicerMode(PathMode):
+class PathSlicerMode(PathMode):
+    """
+    Draw a path on the image viewer; on Enter, materialise a
+    :class:`~glue.plugins.tools.pv_slicer.path_sliced_data.PathSlicedData`
+    for each cube currently in the viewer and open a PV viewer that
+    displays them. Re-pressing the tool reuses the existing PV viewer
+    and updates the path in place.
+    """
 
     icon = 'glue_slice'
     tool_id = 'slice'
@@ -16,259 +31,209 @@ class PVSlicerMode(PathMode):
     tool_tip = ('Extract a slice from an arbitrary path\n'
                 '  ENTER accepts the path\n'
                 '  ESCAPE clears the path')
-    status_tip = 'Draw a path then press ENTER to extract slice, or press ESC to cancel'
+    status_tip = ('Draw a path then press ENTER to extract slice, '
+                  'or press ESC to cancel')
     shortcut = 'P'
 
     def __init__(self, viewer, **kwargs):
-        super(PVSlicerMode, self).__init__(viewer, **kwargs)
+        super().__init__(viewer, **kwargs)
         self._roi_callback = self._extract_callback
-        self._slice_widget = None
-        self.viewer.state.add_callback('reference_data', self._on_reference_data_change)
+        self._pv_viewer = None
+        self.viewer.state.add_callback('reference_data',
+                                       self._on_reference_data_change)
+        self._on_reference_data_change()
 
-    def _on_reference_data_change(self, reference_data):
-        if reference_data is not None:
-            self.enabled = reference_data.ndim == 3
+    def _on_reference_data_change(self, *args):
+        if self.viewer.state.reference_data is not None:
+            self.enabled = self.viewer.state.reference_data.ndim == 3
 
     def _clear_path(self):
         self.viewer.hide_crosshairs()
         self.clear()
 
     def _extract_callback(self, mode):
-        """
-        Extract a PV-like slice, given a path traced on the widget
-        """
         vx, vy = mode.roi().to_polygon()
-        self._build_from_vertices(vx, vy)
+        self._build_or_update_pvs(vx, vy)
 
-    def _build_from_vertices(self, vx, vy):
-        pv_slice, x, y, wcs = _slice_from_path(vx, vy, self.viewer.state.reference_data,
-                                               self.viewer.state.layers[0].attribute,
-                                               self.viewer.state.wcsaxes_slice[::-1])
-        if self._slice_widget is None:
-            self._slice_widget = PVSliceWidget(image=pv_slice, wcs=wcs,
-                                               image_viewer=self.viewer,
-                                               x=x, y=y, interpolation='nearest')
-            self.viewer._session.application.add_widget(self._slice_widget,
-                                                        label='Custom Slice')
-            self._slice_widget.window_closed.connect(self._clear_path)
-        else:
-            self._slice_widget.set_image(image=pv_slice, wcs=wcs,
-                                         x=x, y=y, interpolation='nearest')
+    def _build_or_update_pvs(self, vx, vy):
+        viewer_is_new = self._pv_viewer is None
+        if viewer_is_new:
+            self._pv_viewer = self.viewer.session.application.new_data_viewer(
+                ImageViewer)
 
-        result = self._slice_widget
-        result.axes.set_xlabel("Position along path")
-        if wcs is None:
-            result.axes.set_ylabel("Cube slice index")
-        else:
-            result.axes.set_ylabel(_slice_label(self.viewer.state.reference_data,
-                                                self.viewer.state.wcsaxes_slice[::-1]))
+        dc = self.viewer.session.data_collection
+        x_att = self.viewer.state.x_att
+        y_att = self.viewer.state.y_att
 
-        result.show()
+        updated_pvs = []
+        for layer_state in self.viewer.state.layers:
+            data = layer_state.layer
+            if not isinstance(data, Data):
+                # Subsets come along automatically when their parent
+                # Data is added; nothing to do here.
+                continue
+
+            existing = self._find_existing_pv(dc, data)
+            if existing is None:
+                pv = PathSlicedData(data, x_att, vx, y_att, vy,
+                                    label=data.label + ' [slice]')
+                pv.parent_viewer = self.viewer
+                dc.append(pv)
+                link_path_sliced_to_parent(dc, pv)
+            else:
+                pv = existing
+                pv.cid_x = x_att
+                pv.cid_y = y_att
+                pv.sliced_dims = (x_att.axis, y_att.axis)
+                pv.set_xy(vx, vy)
+            updated_pvs.append((pv, layer_state))
+
+        # Link the path axes of every PV pair so the PV viewer's
+        # generic FRB calls can translate between them.
+        for i, (pv_a, _) in enumerate(updated_pvs):
+            for pv_b, _ in updated_pvs[i + 1:]:
+                if not self._path_link_exists(dc, pv_a, pv_b):
+                    link_path_sliced_pair_paths(dc, pv_a, pv_b)
+
+        if viewer_is_new:
+            for pv, layer_state in updated_pvs:
+                self._pv_viewer.add_data(pv)
+                # Best-effort: copy visual state (color, attribute, etc.)
+                # so the PV layer reads as the same series as the cube
+                # layer. Some properties' choices aren't yet populated
+                # at this point (the layer's just been added) -- in that
+                # case fall through and let the user customise.
+                pvstate = layer_state.as_dict()
+                pvstate.pop('layer', None)
+                for new_layer_state in self._pv_viewer.state.layers[::-1]:
+                    if new_layer_state.layer is pv:
+                        try:
+                            new_layer_state.update_from_dict(pvstate)
+                        except ValueError:
+                            pass
+                        break
+            self._pv_viewer.state.aspect = 'auto'
+            self._pv_viewer.state.color_mode = self.viewer.state.color_mode
+            self._pv_viewer.state.reset_limits()
+
+    @staticmethod
+    def _find_existing_pv(dc, parent_data):
+        for d in dc:
+            if isinstance(d, PathSlicedData) and d.original_data is parent_data:
+                return d
+        return None
+
+    @staticmethod
+    def _path_link_exists(dc, pv_a, pv_b):
+        cid_a = pv_a.pixel_component_ids[-1]
+        cid_b = pv_b.pixel_component_ids[-1]
+        for link in dc.external_links:
+            ends = list(getattr(link, '_from', []))
+            to = getattr(link, '_to', None)
+            if to is not None:
+                ends.append(to)
+            if cid_a in ends and cid_b in ends:
+                return True
+        return False
 
     def close(self):
-        if self._slice_widget:
-            self._slice_widget.close()
-        return super(PVSlicerMode, self).close()
+        if self._pv_viewer is not None:
+            self._pv_viewer.close()
+            self._pv_viewer = None
+        return super().close()
 
 
-class PVSliceWidget(StandaloneImageViewer):
-
-    """ A standalone image widget with extra interactivity for PV slices """
-
-    def __init__(self, image=None, wcs=None, image_viewer=None,
-                 x=None, y=None, **kwargs):
-        """
-        :param image: 2D Numpy array representing the PV Slice
-        :param wcs: WCS for the PV slice
-        :param image_viewer: Parent ImageViewer this was extracted from
-        :param kwargs: Extra keywords are passed to imshow
-        """
-        self._crosshairs = None
-        self._parent = image_viewer
-        super(PVSliceWidget, self).__init__(image=image, wcs=wcs, **kwargs)
-        conn = self.axes.figure.canvas.mpl_connect
-        self._down_id = conn('button_press_event', self._on_click)
-        self._move_id = conn('motion_notify_event', self._on_move)
-        self.axes.format_coord = self._format_coord
-        self._x = x
-        self._y = y
-        self._parent.state.add_callback('x_att', self.reset)
-        self._parent.state.add_callback('y_att', self.reset)
-
-    def _format_coord(self, x, y):
-        """
-        Return a formatted location label for the taskbar
-
-        :param x: x pixel location in slice array
-        :param y: y pixel location in slice array
-        """
-
-        # xy -> xyz in image view
-        pix = self._pos_in_parent(xdata=x, ydata=y)
-
-        # xyz -> data pixel coords
-        # accounts for fact that image might be shown transposed/rotated
-        s = list(self._slc)
-        idx = _slice_index(self._parent.state.reference_data, self._slc)
-        s[s.index('x')] = pix[0]
-        s[s.index('y')] = pix[1]
-        s[idx] = pix[2]
-
-        # labels = self._parent.coordinate_labels(s)
-        # return '         '.join(labels)
-        return ''
-
-    def set_image(self, image=None, wcs=None, x=None, y=None, **kwargs):
-        super(PVSliceWidget, self).set_image(image=image, wcs=wcs, **kwargs)
-        self._axes.set_aspect('auto')
-        self._axes.set_xlim(-0.5, image.shape[1] - 0.5)
-        self._axes.set_ylim(-0.5, image.shape[0] - 0.5)
-        self._slc = self._parent.state.wcsaxes_slice[::-1]
-        self._x = x
-        self._y = y
-
-    @defer_draw
-    def _sync_slice(self, event):
-        s = list(self._slc)
-        # XXX breaks if display_data changes
-        _, _, z = self._pos_in_parent(event)
-        s[_slice_index(self._parent.state.reference_data, s)] = int(z)
-        self._parent.state.slices = tuple(s)
-
-    @defer_draw
-    def _draw_crosshairs(self, event):
-        x, y, _ = self._pos_in_parent(event)
-        self._parent.show_crosshairs(x, y)
-
-    @defer_draw
-    def _on_move(self, event):
-        if not event.button:
-            return
-
-        if not event.inaxes or event.canvas.toolbar.mode != '':
-            return
-
-        self._sync_slice(event)
-        self._draw_crosshairs(event)
-
-    def _pos_in_parent(self, event=None, xdata=None, ydata=None):
-
-        if event is not None:
-            xdata = event.xdata
-            ydata = event.ydata
-
-        # Find position slice where cursor is
-        ind = int(round(np.clip(xdata, 0, self._im_array.shape[1] - 1)))
-
-        # Find pixel coordinate in input image for this slice
-        x = self._x[ind]
-        y = self._y[ind]
-
-        # The 3-rd coordinate in the input WCS is simply the second
-        # coordinate in the PV slice.
-        z = ydata
-
-        return x, y, z
-
-    def _on_click(self, event):
-        if not event.inaxes or event.canvas.toolbar.mode != '':
-            return
-        self._sync_slice(event)
-        self._draw_crosshairs(event)
-
-    def reset(self, *args):
-        self.close()
-
-
-def _slice_from_path(x, y, data, attribute, slc):
+@viewer_tool
+class PathSlicerCrosshairMode(ToolbarModeBase):
     """
-    Extract a PV-like slice from a cube
-
-    :param x: An array of x values to extract (pixel units)
-    :param y: An array of y values to extract (pixel units)
-    :param data: :class:`~glue.core.data.Data`
-    :param attribute: :claass:`~glue.core.data.Component`
-    :param slc: orientation of the image widget that `pts` are defined on
-
-    :returns: (slice, x, y)
-              slice is a 2D Numpy array, corresponding to a "PV ribbon"
-              cutout from the cube
-              x and y are the resampled points along which the
-              ribbon is extracted
-
-    :note: For >3D cubes, the "V-axis" of the PV slice is the longest
-           cube axis ignoring the x/y axes of `slc`
+    Tool for the PV viewer that, while the mouse is dragged, projects
+    the current cursor position back to the parent cube viewer and
+    moves the cube's slice index accordingly.
     """
-    from pvextractor import Path, extract_pv_slice
-    p = Path(list(zip(x, y)))
 
-    cube = data[attribute]
-    dims = list(range(data.ndim))
-    s = list(slc)
-    ind = _slice_index(data, slc)
+    icon = 'glue_path'
+    tool_id = 'pv:crosshair'
+    action_text = 'Show position on original path'
+    tool_tip = 'Click and drag to show position of cursor on original slice.'
+    status_tip = tool_tip
 
-    from astropy.wcs import WCS
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._move_callback = self._on_move
+        self._press_callback = self._on_press
+        self._release_callback = self._on_release
+        self._active = False
+        self._line = None
+        self._crosshair = None
+        self.data = None
+        self.viewer.state.add_callback('reference_data',
+                                       self._on_reference_data_change)
+        self._on_reference_data_change()
 
-    if isinstance(data.coords, WCS):
-        cube_wcs = data.coords
-    else:
-        cube_wcs = None
+    def _on_reference_data_change(self, *args):
+        ref = self.viewer.state.reference_data
+        self.enabled = isinstance(ref, PathSlicedData) \
+            and getattr(ref, 'parent_viewer', None) is not None
+        self.data = ref if self.enabled else None
 
-    # transpose cube to (z, y, x, <whatever>)
-    def _swap(x, s, i, j):
-        x[i], x[j] = x[j], x[i]
-        s[i], s[j] = s[j], s[i]
+    def activate(self):
+        # Draw the path on the parent viewer, plus an empty crosshair
+        # marker that the move callback will reposition.
+        self._line = Line2D(self.data.x, self.data.y, zorder=1000,
+                            color='#669dff', alpha=0.6, lw=2)
+        self.data.parent_viewer.axes.add_line(self._line)
+        self._crosshair = self.data.parent_viewer.axes.plot(
+            [], [], '+', ms=12, mfc='none', mec='#669dff', mew=1,
+            zorder=100)[0]
+        self.data.parent_viewer.figure.canvas.draw_idle()
+        super().activate()
 
-    _swap(dims, s, ind, 0)
-    _swap(dims, s, s.index('y'), 1)
-    _swap(dims, s, s.index('x'), 2)
+    def deactivate(self):
+        if self._line is not None:
+            self._line.remove()
+            self._line = None
+        if self._crosshair is not None:
+            self._crosshair.remove()
+            self._crosshair = None
+        if self.data is not None:
+            self.data.parent_viewer.figure.canvas.draw_idle()
+        super().deactivate()
 
-    cube = cube.transpose(dims)
+    def _on_press(self, mode):
+        self._active = True
 
-    if cube_wcs is not None:
-        cube_wcs = cube_wcs.sub([data.ndim - nx for nx in dims[::-1]])
+    def _on_release(self, mode):
+        self._active = False
 
-    # slice down from >3D to 3D if needed
-    s = tuple([slice(None)] * 3 + [slc[d] for d in dims[3:]])
-    cube = cube[s]
+    def _on_move(self, mode):
+        if not self._active or self.data is None:
+            return
 
-    # sample cube
-    spacing = 1  # pixel
-    x, y = [np.round(_x).astype(int) for _x in p.sample_points(spacing)]
+        xdata, ydata = self._event_xdata, self._event_ydata
+        if xdata is None or ydata is None:
+            return
 
-    try:
-        result = extract_pv_slice(cube, path=p, wcs=cube_wcs, order=0)
-        wcs = WCS(result.header)
-    except Exception:  # sometimes pvextractor complains due to wcs. Try to recover
-        result = extract_pv_slice(cube, path=p, wcs=None, order=0)
-        wcs = None
+        # The PV viewer's x-axis is the path index; clip and round to
+        # land on a valid sample of the parent's path.
+        ind = int(round(np.clip(xdata, 0, self.data.shape[-1] - 1)))
+        x = self.data.x[ind]
+        y = self.data.y[ind]
+        self._crosshair.set_xdata([x])
+        self._crosshair.set_ydata([y])
 
-    data = result.data
-
-    return data, x, y, wcs
+        # The PV's y-axis is the parent cube's non-sliced axis -- move
+        # the parent viewer's slice index to that integer pixel.
+        parent_viewer = self.data.parent_viewer
+        slc = list(parent_viewer.state.wcsaxes_slice[::-1])
+        slc[_slice_index(parent_viewer.state.reference_data, slc)] = int(ydata)
+        parent_viewer.state.slices = tuple(slc)
+        parent_viewer.figure.canvas.draw_idle()
 
 
 def _slice_index(data, slc):
-    """
-    The axis over which to extract PV slices
-    """
-    for i in range(len(slc)):
-        if np.isreal(slc[i]):
+    """The axis of ``data`` along which the slice index varies (the
+    non-spatial axis when slicing through a 3-d cube)."""
+    for i, item in enumerate(slc):
+        if np.isreal(item):
             return i
     raise ValueError("Could not find slice index with slc={0}".format(slc))
-
-
-def _slice_label(data, slc):
-    """
-    Returns a formatted axis label corresponding to the slice dimension
-    in a PV slice
-
-    :param data: Data that slice is extracted from
-    :param slc: orientation in the image widget from which the PV slice
-                was defined
-    """
-    idx = _slice_index(data, slc)
-    if getattr(data, 'coords') is None:
-        return data.pixel_component_ids[idx].label
-    else:
-        return axis_label(data.coords, idx)

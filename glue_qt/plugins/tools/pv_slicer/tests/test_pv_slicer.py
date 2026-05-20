@@ -1,61 +1,15 @@
-import numpy as np
 from unittest.mock import MagicMock
-from numpy.testing import assert_allclose
+
+import numpy as np
 
 from glue.core import Data
 from glue.core.coordinates import IdentityCoordinates
-from glue_qt.viewers.image import StandaloneImageViewer, ImageViewer
-from glue.tests.helpers import requires_astropy, requires_scipy
+from glue.plugins.tools.pv_slicer.path_sliced_data import PathSlicedData
+
 from glue_qt.app import GlueApplication
-from glue_qt.utils import process_events
+from glue_qt.viewers.image import ImageViewer
 
-from ..pv_slicer import _slice_from_path, _slice_label, _slice_index, PVSliceWidget
-
-
-@requires_astropy
-@requires_scipy
-class TestSliceExtraction(object):
-
-    def setup_method(self, method):
-        self.x = np.random.random((2, 3, 4))
-        self.d = Data(x=self.x)
-
-    def test_constant_y(self):
-
-        slc = (0, 'y', 'x')
-        x = [-0.5, 3.5]
-        y = [0, 0]
-        s = _slice_from_path(x, y, self.d, 'x', slc)[0]
-        assert_allclose(s, self.x[:, 0, :])
-
-    def test_constant_x(self):
-
-        slc = (0, 'y', 'x')
-        y = [-0.5, 2.5]
-        x = [0, 0]
-        s = _slice_from_path(x, y, self.d, 'x', slc)[0]
-        assert_allclose(s, self.x[:, :, 0])
-
-    def test_transpose(self):
-        slc = (0, 'x', 'y')
-        y = [-0.5, 3.5]
-        x = [0, 0]
-        s = _slice_from_path(x, y, self.d, 'x', slc)[0]
-        assert_allclose(s, self.x[:, 0, :])
-
-
-def test_slice_label():
-    d = Data(x=np.zeros((2, 3, 4)), coords=IdentityCoordinates(n_dim=3))
-    assert _slice_label(d, (0, 'y', 'x')) == 'World 0'
-    assert _slice_label(d, ('y', 0, 'x')) == 'World 1'
-    assert _slice_label(d, ('y', 'x', 0)) == 'World 2'
-
-
-def test_slice_label_nocoords():
-    d = Data(x=np.zeros((2, 3, 4)))
-    assert _slice_label(d, (0, 'y', 'x')) == 'Pixel Axis 0 [z]'
-    assert _slice_label(d, ('y', 0, 'x')) == 'Pixel Axis 1 [y]'
-    assert _slice_label(d, ('y', 'x', 0)) == 'Pixel Axis 2 [x]'
+from ..pv_slicer import PathSlicerMode, PathSlicerCrosshairMode, _slice_index
 
 
 def test_slice_index():
@@ -64,91 +18,87 @@ def test_slice_index():
     assert _slice_index(d, ('y', 0, 'x')) == 1
 
 
-class TestStandaloneImageViewer(object):
+class TestPathSlicerMode:
 
     def setup_method(self, method):
-        im = np.random.random((3, 3))
-        self.w = StandaloneImageViewer(im)
-
-    def teardown_method(self, method):
-        self.w.close()
-
-    def test_set_cmap(self):
-        cm_mode = self.w.toolbar.tools['image:colormap']
-        act = cm_mode.menu_actions()[1]
-        act.trigger()
-        assert self.w._composite.layers['image']['cmap'] is act.cmap
-
-    def test_double_set_image(self):
-        assert len(self.w._axes.images) == 1
-        self.w.set_image(np.zeros((3, 3)))
-        assert len(self.w._axes.images) == 1
-
-
-class MockImageViewer(object):
-
-    def __init__(self, slice, data):
-        self.slice = slice
-        self.data = data
-        self.wcs = None
-        self.state = MagicMock()
-
-
-class TestPVSliceWidget(object):
-
-    def setup_method(self, method):
-
-        self.d = Data(x=np.zeros((2, 3, 4)))
-        self.slc = (0, 'y', 'x')
-        self.image = MockImageViewer(self.slc, self.d)
-        self.w = PVSliceWidget(image=np.zeros((3, 4)), wcs=None, image_viewer=self.image)
-
-    def teardown_method(self, method):
-        self.w.close()
-
-    def test_basic(self):
-        pass
-
-
-class TestPVSliceTool(object):
-
-    def setup_method(self, method):
-        self.cube = Data(label='cube', x=np.arange(1000).reshape((5, 10, 20)))
-        self.application = GlueApplication()
-        self.application.data_collection.append(self.cube)
-        self.viewer = self.application.new_data_viewer(ImageViewer)
-        self.viewer.add_data(self.cube)
+        self.cube = Data(label='cube',
+                         x=np.arange(1000).reshape((5, 10, 20)),
+                         coords=IdentityCoordinates(n_dim=3))
+        self.app = GlueApplication()
+        self.dc = self.app.data_collection
+        self.dc.append(self.cube)
+        self.viewer = self.app.new_data_viewer(ImageViewer, data=self.cube)
 
     def teardown_method(self, method):
         self.viewer.close()
         self.viewer = None
-        self.application.close()
-        self.application = None
+        self.app.close()
+        self.app = None
 
-    @requires_astropy
-    @requires_scipy
-    def test_basic(self):
-
+    def test_extract_callback_creates_path_sliced_data(self):
         self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+        assert isinstance(tool, PathSlicerMode)
 
-        self.viewer.axes.figure.canvas.draw()
-        process_events()
+        # Stub the ROI to feed a known vertex list to _extract_callback.
+        roi = MagicMock()
+        roi.to_polygon.return_value = ([1, 10, 12], [2, 13, 14])
+        mode = MagicMock()
+        mode.roi.return_value = roi
 
-        x, y = self.viewer.axes.transData.transform([[0.9, 4]])[0]
-        self.viewer.axes.figure.canvas.button_press_event(x, y, 1)
-        x, y = self.viewer.axes.transData.transform([[7.2, 6.6]])[0]
-        self.viewer.axes.figure.canvas.button_press_event(x, y, 1)
+        tool._extract_callback(mode)
 
-        process_events()
+        # The data collection should now hold the cube and one PV slice.
+        pvs = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(pvs) == 1
+        assert pvs[0].original_data is self.cube
+        # parent_viewer is wired up so PathSlicerCrosshairMode can find
+        # its way back to the cube viewer.
+        assert pvs[0].parent_viewer is self.viewer
 
-        assert len(self.application.tab().subWindowList()) == 1
+    def test_re_extracting_updates_existing_pv_in_place(self):
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
 
-        self.viewer.axes.figure.canvas.key_press_event('enter')
+        roi = MagicMock()
+        roi.to_polygon.return_value = ([1, 10, 12], [2, 13, 14])
+        mode = MagicMock()
+        mode.roi.return_value = roi
+        tool._extract_callback(mode)
+        first_pv = [d for d in self.dc if isinstance(d, PathSlicedData)][0]
+        first_x = first_pv.x.copy()
 
-        process_events()
+        # Re-trace -- there must still be a single PV and its x must have
+        # been replaced (not appended-to or recreated).
+        roi.to_polygon.return_value = ([0, 5, 15], [0, 4, 12])
+        tool._extract_callback(mode)
+        pvs = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(pvs) == 1
+        assert pvs[0] is first_pv
+        assert not np.array_equal(first_x, pvs[0].x)
 
-        assert len(self.application.tab().subWindowList()) == 2
+    def test_crosshair_disabled_without_path_sliced_reference_data(self):
+        # The crosshair tool only makes sense when the viewer's reference
+        # data is a PathSlicedData with a known parent_viewer; on a plain
+        # cube viewer it should be disabled.
+        mode = PathSlicerCrosshairMode(self.viewer)
+        assert mode.enabled is False
+        assert mode.data is None
 
-        pv_widget = self.application.tab().subWindowList()[1].widget()
-        assert pv_widget._x.shape == (6,)
-        assert pv_widget._y.shape == (6,)
+    def test_crosshair_enabled_on_pv_viewer(self):
+        # Push a PathSlicedData through the slice tool, then verify the
+        # crosshair tool reports as enabled when constructed against the
+        # PV viewer (which the slice tool opened).
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+        roi = MagicMock()
+        roi.to_polygon.return_value = ([1, 10, 12], [2, 13, 14])
+        mode = MagicMock()
+        mode.roi.return_value = roi
+        tool._extract_callback(mode)
+
+        pv_viewer = tool._pv_viewer
+        assert pv_viewer is not None
+        crosshair = PathSlicerCrosshairMode(pv_viewer)
+        assert crosshair.enabled is True
+        assert isinstance(crosshair.data, PathSlicedData)
