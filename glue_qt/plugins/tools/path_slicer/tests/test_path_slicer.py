@@ -129,7 +129,7 @@ class TestPathSlicerMode:
         assert tool._target_trace is tool._traces[0]
 
         # User picks "Create new path" from the dropdown.
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
         assert len(tool._traces) == 2
         # Now the most recently created trace is the target.
@@ -149,7 +149,7 @@ class TestPathSlicerMode:
         assert len(tool._slice_viewers) == 1
         first_slice_viewer = tool._slice_viewers[0]
 
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
         # A second slice viewer was opened for the new path.
         assert len(tool._slice_viewers) == 2
@@ -157,7 +157,7 @@ class TestPathSlicerMode:
         assert tool._slice_viewers[1] is not first_slice_viewer
 
         # Updating an existing path must not open a third.
-        tool._set_target(tool._traces[0])
+        tool.set_target(tool._traces[0])
         self._trace(tool, [3, 7, 11], [4, 8, 12])
         assert len(tool._slice_viewers) == 2
 
@@ -173,7 +173,7 @@ class TestPathSlicerMode:
         first_x = tool._traces[0][0].x.copy()
         first_y = tool._traces[0][0].y.copy()
 
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
 
         # Path 1 must still have its original vertices.
@@ -185,18 +185,18 @@ class TestPathSlicerMode:
         tool = self.viewer.toolbar.active_tool
 
         # Empty path list -> only "Create new path".
-        entries = tool._menu_entries()
+        entries = tool.menu_entries()
         assert [label for label, _ in entries] == ['Create new path']
 
         # After two traces, the menu lists both as update candidates.
         self._trace(tool, [1, 10, 12], [2, 13, 14])
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
 
-        labels = [label for label, _ in tool._menu_entries()]
+        labels = [label for label, _ in tool.menu_entries()]
         assert labels == [
             'Create new path', 'Update path 1', 'Update path 2']
-        targets = [target for _, target in tool._menu_entries()]
+        targets = [target for _, target in tool.menu_entries()]
         assert targets[0] is None
         assert targets[1] is tool._traces[0]
         assert targets[2] is tool._traces[1]
@@ -209,13 +209,13 @@ class TestPathSlicerMode:
         first_trace = tool._traces[0]
         first_x = first_trace[0].x.copy()
 
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
         second_trace = tool._traces[1]
 
         # User selects "Update path 1" and re-traces -- the first slice
         # is refreshed while the second is left alone.
-        tool._set_target(first_trace)
+        tool.set_target(first_trace)
         second_x_before = second_trace[0].x.copy()
         self._trace(tool, [3, 7, 11], [4, 8, 12])
 
@@ -232,7 +232,7 @@ class TestPathSlicerMode:
         tool = self.viewer.toolbar.active_tool
 
         self._trace(tool, [1, 10, 12], [2, 13, 14])
-        tool._set_target(None)
+        tool.set_target(None)
         self._trace(tool, [0, 5, 15], [0, 4, 12])
         # Two overlays now exist (one per trace).
         assert len(tool._overlays) == 2
