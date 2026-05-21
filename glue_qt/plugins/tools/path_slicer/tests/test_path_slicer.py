@@ -4,12 +4,12 @@ import numpy as np
 
 from glue.core import Data
 from glue.core.coordinates import IdentityCoordinates
-from glue.plugins.tools.pv_slicer.path_sliced_data import PathSlicedData
+from glue.plugins.tools.path_slicer.path_sliced_data import PathSlicedData
 
 from glue_qt.app import GlueApplication
 from glue_qt.viewers.image import ImageViewer
 
-from ..pv_slicer import PathSlicerMode, PathSlicerCrosshairMode
+from ..path_slicer import PathSlicerMode, PathSlicerCrosshairMode
 
 
 class TestPathSlicerMode:
