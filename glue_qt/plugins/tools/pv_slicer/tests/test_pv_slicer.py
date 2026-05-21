@@ -9,13 +9,7 @@ from glue.plugins.tools.pv_slicer.path_sliced_data import PathSlicedData
 from glue_qt.app import GlueApplication
 from glue_qt.viewers.image import ImageViewer
 
-from ..pv_slicer import PathSlicerMode, PathSlicerCrosshairMode, _slice_index
-
-
-def test_slice_index():
-    d = Data(x=np.zeros((2, 3, 4)))
-    assert _slice_index(d, (0, 'y', 'x')) == 0
-    assert _slice_index(d, ('y', 0, 'x')) == 1
+from ..pv_slicer import PathSlicerMode, PathSlicerCrosshairMode
 
 
 class TestPathSlicerMode:

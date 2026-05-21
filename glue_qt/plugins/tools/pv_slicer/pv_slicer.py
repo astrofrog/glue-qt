@@ -222,18 +222,15 @@ class PathSlicerCrosshairMode(ToolbarModeBase):
         self._crosshair.set_ydata([y])
 
         # The PV's y-axis is the parent cube's non-sliced axis -- move
-        # the parent viewer's slice index to that integer pixel.
+        # the parent viewer's slice index to that integer pixel. This
+        # writes to ImageViewerState.slices, which is backend-agnostic
+        # (so the same approach works for the matplotlib and bqplot
+        # image viewers in glue-jupyter).
         parent_viewer = self.data.parent_viewer
-        slc = list(parent_viewer.state.wcsaxes_slice[::-1])
-        slc[_slice_index(parent_viewer.state.reference_data, slc)] = int(ydata)
-        parent_viewer.state.slices = tuple(slc)
+        state = parent_viewer.state
+        slc = list(state.slices)
+        for i in range(state.reference_data.ndim):
+            if i != state.x_att.axis and i != state.y_att.axis:
+                slc[i] = int(ydata)
+        state.slices = tuple(slc)
         parent_viewer.figure.canvas.draw_idle()
-
-
-def _slice_index(data, slc):
-    """The axis of ``data`` along which the slice index varies (the
-    non-spatial axis when slicing through a 3-d cube)."""
-    for i, item in enumerate(slc):
-        if np.isreal(item):
-            return i
-    raise ValueError("Could not find slice index with slc={0}".format(slc))
