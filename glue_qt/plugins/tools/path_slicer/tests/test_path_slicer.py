@@ -96,3 +96,11 @@ class TestPathSlicerMode:
         crosshair = PathSlicerCrosshairMode(slice_viewer)
         assert crosshair.enabled is True
         assert isinstance(crosshair.data, PathSlicedData)
+
+    def test_crosshair_action_hidden_on_cube_viewer(self):
+        # The crosshair tool only makes sense over a slice viewer; the
+        # toolbar must hide the action when the tool reports as disabled
+        # at registration time (not just on subsequent changes).
+        action = self.viewer.toolbar.actions['path:crosshair']
+        assert action.isVisible() is False
+        assert self.viewer.toolbar.tools['path:crosshair'].enabled is False
