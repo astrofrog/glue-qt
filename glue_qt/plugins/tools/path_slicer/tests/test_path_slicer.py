@@ -138,6 +138,29 @@ class TestPathSlicerMode:
         slices = [d for d in self.dc if isinstance(d, PathSlicedData)]
         assert len(slices) == 2
 
+    def test_create_new_opens_a_fresh_slice_viewer_each_time(self):
+        # "Create new path" should open its own slice viewer; selecting
+        # an existing path from the dropdown and re-tracing must NOT
+        # open another one (the existing viewer's layer just refreshes).
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        assert len(tool._slice_viewers) == 1
+        first_slice_viewer = tool._slice_viewers[0]
+
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+        # A second slice viewer was opened for the new path.
+        assert len(tool._slice_viewers) == 2
+        assert tool._slice_viewers[0] is first_slice_viewer
+        assert tool._slice_viewers[1] is not first_slice_viewer
+
+        # Updating an existing path must not open a third.
+        tool._set_target(tool._traces[0])
+        self._trace(tool, [3, 7, 11], [4, 8, 12])
+        assert len(tool._slice_viewers) == 2
+
     def test_creating_new_does_not_disturb_previous_path(self):
         # Regression: an earlier prototype routed the slice-viewer side
         # through ``open_or_update_slice_viewer`` from path_slicer.common,

@@ -62,6 +62,13 @@ class PathSlicerMode(BasePathSlicerMode):
         # selecting "Update trace N" refreshes every PathSlicedData in
         # that trace.
         self._traces = []  # list[list[PathSlicedData]]
+        # One slice viewer per trace; parallel to ``self._traces``. Each
+        # "Create new" Enter opens a fresh viewer so the user can
+        # compare slices side by side. ``self._slice_viewer`` (set on
+        # the base class) shadows the most recent for callers that
+        # only know the singular attribute (e.g. the crosshair tool's
+        # introspection).
+        self._slice_viewers = []
         # None means "create new on next Enter"; otherwise one of
         # ``self._traces``.
         self._target_trace = None
@@ -152,38 +159,39 @@ class PathSlicerMode(BasePathSlicerMode):
     # ------------------------------------------------------------------
 
     def _open_or_update(self, vx, vy):
-        # Don't go through path_slicer.common.open_or_update_slice_viewer
+        # Don't route through path_slicer.common.open_or_update_slice_viewer
         # here: that helper assumes one PathSlicedData per cube and uses
         # ``find_existing_path_slice`` to locate it. With multiple paths
         # per cube the helper would pick a sibling at random and
-        # overwrite its vertices. We manage the create / update side
-        # explicitly so the right trace gets updated.
+        # overwrite its vertices.
         if self._target_trace is None:
             new_paths = self._create_trace(vx, vy)
-            self._add_to_slice_viewer(new_paths)
+            slice_viewer = self._open_slice_viewer_for(new_paths)
+            self._slice_viewers.append(slice_viewer)
+            # Shadow the latest viewer on the base-class attribute so
+            # the crosshair tool's introspection still finds something.
+            self._slice_viewer = slice_viewer
             # The just-created trace becomes the target for the next
             # Enter, so consecutive Enters tweak the same path until
             # the user picks something else from the dropdown.
             self._target_trace = self._traces[-1]
         else:
             self._update_trace(self._target_trace, vx, vy)
-            # set_xy broadcasts NumericalDataChangedMessage; existing
-            # slice-viewer layers refresh in place.
+            # set_xy broadcasts NumericalDataChangedMessage; the
+            # corresponding slice viewer's layer refreshes in place,
+            # no extra wiring needed here.
         self._refresh_overlays()
 
-    def _add_to_slice_viewer(self, new_paths):
-        opened = self._slice_viewer is None
-        if opened:
-            self._slice_viewer = self.viewer.session.application.new_data_viewer(
-                self.slice_viewer_cls)
-        for path in new_paths:
-            self._slice_viewer.add_data(path)
-        if opened:
-            self._slice_viewer.state.aspect = 'auto'
-            if hasattr(self._slice_viewer.state, 'color_mode'):
-                self._slice_viewer.state.color_mode = (
-                    self.viewer.state.color_mode)
-            self._slice_viewer.state.reset_limits()
+    def _open_slice_viewer_for(self, paths):
+        slice_viewer = self.viewer.session.application.new_data_viewer(
+            self.slice_viewer_cls)
+        for path in paths:
+            slice_viewer.add_data(path)
+        slice_viewer.state.aspect = 'auto'
+        if hasattr(slice_viewer.state, 'color_mode'):
+            slice_viewer.state.color_mode = self.viewer.state.color_mode
+        slice_viewer.state.reset_limits()
+        return slice_viewer
 
     def _create_trace(self, vx, vy):
         dc = self.viewer.session.data_collection
@@ -233,11 +241,12 @@ class PathSlicerMode(BasePathSlicerMode):
         for line in self._overlays.values():
             line.remove()
         self._overlays.clear()
-        if self._slice_viewer is not None:
-            self._slice_viewer.close()
-            self._slice_viewer = None
-        # Skip BasePathSlicerMode.close (which would re-close the slice
-        # viewer); jump straight to PathMode's close.
+        for slice_viewer in self._slice_viewers:
+            slice_viewer.close()
+        self._slice_viewers.clear()
+        self._slice_viewer = None
+        # Skip BasePathSlicerMode.close (which would close the same
+        # ``_slice_viewer`` we already handled); jump to PathMode.close.
         return super(BasePathSlicerMode, self).close()
 
 
