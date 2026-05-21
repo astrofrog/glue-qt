@@ -104,3 +104,117 @@ class TestPathSlicerMode:
         action = self.viewer.toolbar.actions['path:crosshair']
         assert action.isVisible() is False
         assert self.viewer.toolbar.tools['path:crosshair'].enabled is False
+
+    # ------------------------------------------------------------------
+    # Multi-path dropdown
+    # ------------------------------------------------------------------
+
+    def _trace(self, tool, vx, vy):
+        roi = MagicMock()
+        roi.to_polygon.return_value = (list(vx), list(vy))
+        mode = MagicMock()
+        mode.roi.return_value = roi
+        tool._extract_callback(mode)
+
+    def test_create_new_after_trace_extends_path_list(self):
+        # First trace creates path 1; user picks "Create new" from the
+        # menu; second trace creates path 2.
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        assert len(tool._traces) == 1
+        # After a trace, _target_trace points at the most recent trace
+        # (so consecutive Enters keep updating the same path).
+        assert tool._target_trace is tool._traces[0]
+
+        # User picks "Create new path" from the dropdown.
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+        assert len(tool._traces) == 2
+        # Now the most recently created trace is the target.
+        assert tool._target_trace is tool._traces[1]
+
+        slices = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(slices) == 2
+
+    def test_creating_new_does_not_disturb_previous_path(self):
+        # Regression: an earlier prototype routed the slice-viewer side
+        # through ``open_or_update_slice_viewer`` from path_slicer.common,
+        # whose ``find_existing_path_slice`` returned the first
+        # PathSlicedData over the cube and overwrote it -- so creating
+        # path 2 silently corrupted path 1.
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        first_x = tool._traces[0][0].x.copy()
+        first_y = tool._traces[0][0].y.copy()
+
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+
+        # Path 1 must still have its original vertices.
+        assert np.array_equal(tool._traces[0][0].x, first_x)
+        assert np.array_equal(tool._traces[0][0].y, first_y)
+
+    def test_menu_entries_reflect_current_traces(self):
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+
+        # Empty path list -> only "Create new path".
+        entries = tool._menu_entries()
+        assert [label for label, _ in entries] == ['Create new path']
+
+        # After two traces, the menu lists both as update candidates.
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+
+        labels = [label for label, _ in tool._menu_entries()]
+        assert labels == [
+            'Create new path', 'Update path 1', 'Update path 2']
+        targets = [target for _, target in tool._menu_entries()]
+        assert targets[0] is None
+        assert targets[1] is tool._traces[0]
+        assert targets[2] is tool._traces[1]
+
+    def test_set_target_to_existing_trace_then_re_extract_updates_that_one(self):
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        first_trace = tool._traces[0]
+        first_x = first_trace[0].x.copy()
+
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+        second_trace = tool._traces[1]
+
+        # User selects "Update path 1" and re-traces -- the first slice
+        # is refreshed while the second is left alone.
+        tool._set_target(first_trace)
+        second_x_before = second_trace[0].x.copy()
+        self._trace(tool, [3, 7, 11], [4, 8, 12])
+
+        assert not np.array_equal(first_x, first_trace[0].x)
+        assert np.array_equal(second_x_before, second_trace[0].x)
+        # Still just two PathSlicedData -- nothing new was created.
+        slices = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(slices) == 2
+
+    def test_overlays_show_one_line_per_trace_with_active_opaque(self):
+        # The on-source-viewer overlay should have one Line2D per trace,
+        # the active trace at alpha=1.0 and the others faded.
+        self.viewer.toolbar.active_tool = 'slice'
+        tool = self.viewer.toolbar.active_tool
+
+        self._trace(tool, [1, 10, 12], [2, 13, 14])
+        tool._set_target(None)
+        self._trace(tool, [0, 5, 15], [0, 4, 12])
+        # Two overlays now exist (one per trace).
+        assert len(tool._overlays) == 2
+        # The active one is the second trace (set just above by the
+        # post-trace "newest is the target" rule).
+        active_line = tool._overlays[id(tool._traces[1])]
+        other_line = tool._overlays[id(tool._traces[0])]
+        assert active_line.get_alpha() > other_line.get_alpha()
