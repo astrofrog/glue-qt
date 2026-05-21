@@ -42,15 +42,15 @@ class TestPathSlicerMode:
 
         tool._extract_callback(mode)
 
-        # The data collection should now hold the cube and one PV slice.
-        pvs = [d for d in self.dc if isinstance(d, PathSlicedData)]
-        assert len(pvs) == 1
-        assert pvs[0].original_data is self.cube
+        # The data collection should now hold the cube and one path slice.
+        slices = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(slices) == 1
+        assert slices[0].original_data is self.cube
         # parent_viewer is wired up so PathSlicerCrosshairMode can find
         # its way back to the cube viewer.
-        assert pvs[0].parent_viewer is self.viewer
+        assert slices[0].parent_viewer is self.viewer
 
-    def test_re_extracting_updates_existing_pv_in_place(self):
+    def test_re_extracting_updates_existing_slice_in_place(self):
         self.viewer.toolbar.active_tool = 'slice'
         tool = self.viewer.toolbar.active_tool
 
@@ -59,17 +59,17 @@ class TestPathSlicerMode:
         mode = MagicMock()
         mode.roi.return_value = roi
         tool._extract_callback(mode)
-        first_pv = [d for d in self.dc if isinstance(d, PathSlicedData)][0]
-        first_x = first_pv.x.copy()
+        first_slice = [d for d in self.dc if isinstance(d, PathSlicedData)][0]
+        first_x = first_slice.x.copy()
 
-        # Re-trace -- there must still be a single PV and its x must have
+        # Re-trace -- there must still be a single slice and its x must have
         # been replaced (not appended-to or recreated).
         roi.to_polygon.return_value = ([0, 5, 15], [0, 4, 12])
         tool._extract_callback(mode)
-        pvs = [d for d in self.dc if isinstance(d, PathSlicedData)]
-        assert len(pvs) == 1
-        assert pvs[0] is first_pv
-        assert not np.array_equal(first_x, pvs[0].x)
+        slices = [d for d in self.dc if isinstance(d, PathSlicedData)]
+        assert len(slices) == 1
+        assert slices[0] is first_slice
+        assert not np.array_equal(first_x, slices[0].x)
 
     def test_crosshair_disabled_without_path_sliced_reference_data(self):
         # The crosshair tool only makes sense when the viewer's reference
@@ -79,10 +79,10 @@ class TestPathSlicerMode:
         assert mode.enabled is False
         assert mode.data is None
 
-    def test_crosshair_enabled_on_pv_viewer(self):
+    def test_crosshair_enabled_on_slice_viewer(self):
         # Push a PathSlicedData through the slice tool, then verify the
         # crosshair tool reports as enabled when constructed against the
-        # PV viewer (which the slice tool opened).
+        # slice viewer (which the slice tool opened).
         self.viewer.toolbar.active_tool = 'slice'
         tool = self.viewer.toolbar.active_tool
         roi = MagicMock()
@@ -91,8 +91,8 @@ class TestPathSlicerMode:
         mode.roi.return_value = roi
         tool._extract_callback(mode)
 
-        pv_viewer = tool._pv_viewer
-        assert pv_viewer is not None
-        crosshair = PathSlicerCrosshairMode(pv_viewer)
+        slice_viewer = tool._slice_viewer
+        assert slice_viewer is not None
+        crosshair = PathSlicerCrosshairMode(slice_viewer)
         assert crosshair.enabled is True
         assert isinstance(crosshair.data, PathSlicedData)

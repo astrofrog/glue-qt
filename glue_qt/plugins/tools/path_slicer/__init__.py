@@ -19,7 +19,7 @@ __all__ = ['PathSlicerMode', 'PathSlicerCrosshairMode']
 @viewer_tool
 class PathSlicerMode(BasePathSlicerMode):
     tool_id = 'slice'
-    pv_viewer_cls = ImageViewer
+    slice_viewer_cls = ImageViewer
 
 
 @viewer_tool
