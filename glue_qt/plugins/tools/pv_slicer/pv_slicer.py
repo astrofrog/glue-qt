@@ -44,6 +44,10 @@ class PathSlicerMode(PathMode):
         self._on_reference_data_change()
 
     def _on_reference_data_change(self, *args):
+        # State callbacks can fire after Tool.close() has cleared
+        # self.viewer (the state outlives the tool); just bail.
+        if self.viewer is None:
+            return
         if self.viewer.state.reference_data is not None:
             self.enabled = self.viewer.state.reference_data.ndim == 3
 
@@ -171,6 +175,8 @@ class PathSlicerCrosshairMode(ToolbarModeBase):
         self._on_reference_data_change()
 
     def _on_reference_data_change(self, *args):
+        if self.viewer is None:
+            return
         ref = self.viewer.state.reference_data
         self.enabled = isinstance(ref, PathSlicedData) \
             and getattr(ref, 'parent_viewer', None) is not None
