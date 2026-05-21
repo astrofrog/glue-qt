@@ -9,7 +9,7 @@ from glue.plugins.tools.path_slicer.path_sliced_data import PathSlicedData
 from glue_qt.app import GlueApplication
 from glue_qt.viewers.image import ImageViewer
 
-from ..path_slicer import PathSlicerMode, PathSlicerCrosshairMode
+from .. import PathSlicerMode, PathSlicerCrosshairMode
 
 
 class TestPathSlicerMode:
